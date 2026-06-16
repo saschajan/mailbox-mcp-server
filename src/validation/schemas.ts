@@ -1,9 +1,7 @@
 import * as v from "valibot";
-
 // =============================================================================
 // SANITIZATION UTILITIES
 // =============================================================================
-
 export const sanitizeString = (str: string): string => {
   // Remove control characters (0-31, 127-159) without using regex ranges
   return str
@@ -19,7 +17,6 @@ export const sanitizeString = (str: string): string => {
     })
     .join("");
 };
-
 export const sanitizeHtml = (html: string): string => {
   // Basic HTML sanitization - remove dangerous tags and attributes
   return html
@@ -29,11 +26,9 @@ export const sanitizeHtml = (html: string): string => {
     .replace(/href="javascript:[^"]*"/gi, 'href=""') // Remove javascript: URLs
     .replace(/javascript:/gi, "");
 };
-
 // =============================================================================
 // BASE VALIDATION SCHEMAS
 // =============================================================================
-
 // Email address validation with proper RFC 5322 compliance
 const emailSchema = v.pipe(
   v.string("Email must be a string"),
@@ -43,38 +38,43 @@ const emailSchema = v.pipe(
   v.transform(sanitizeString),
   v.transform(email => email.toLowerCase()),
 );
-
-// Folder name validation - prevent path traversal
+// Folder name validation - prevent path traversal but allow "/" for folder hierarchy
 const folderNameSchema = v.pipe(
   v.string("Folder name must be a string"),
   v.trim(),
   v.minLength(1, "Folder name cannot be empty"),
-  v.maxLength(255, "Folder name too long"),
-  v.check(str => !/[/\\<>:"|?*]/.test(str), "Invalid folder name characters"),
+  v.maxLength(500, "Folder path too long"), // Increased to allow nested paths
+  v.check(str => {
+    // Allow "/" for folder hierarchy (like "INBOX/Haussanierung" or "Archive/2022")
+    // Block dangerous characters but NOT "/" or "."
+    // Disallowed: \ < > : " | ? * and control chars
+    return !/[\\<>:"|?*]/.test(str);
+  }, "Invalid folder name characters"),
+  v.check(str => {
+    // Prevent path traversal attempts like "../" or "./"
+    const parts = str.split("/");
+    return !parts.some(part => part === ".." || part === ".");
+  }, "Path traversal not allowed"),
   v.transform(sanitizeString),
 );
-
 // Subject line validation
 const subjectSchema = v.pipe(
   v.string("Subject must be a string"),
   v.maxLength(998, "Subject line too long"), // RFC 5322 limit
   v.transform(sanitizeString),
 );
-
 // Text content validation
 const textContentSchema = v.pipe(
   v.string("Text content must be a string"),
   v.maxLength(1000000, "Text content too long"), // 1MB limit
   v.transform(sanitizeString),
 );
-
 // HTML content validation
 const htmlContentSchema = v.pipe(
   v.string("HTML content must be a string"),
   v.maxLength(1000000, "HTML content too long"), // 1MB limit
   v.transform(sanitizeHtml),
 );
-
 // Date validation - flexible ISO 8601 format support
 const dateSchema = v.pipe(
   v.string("Date must be a string"),
@@ -96,7 +96,6 @@ const dateSchema = v.pipe(
     return !Number.isNaN(date.getTime());
   }, "Invalid date - unable to parse"),
 );
-
 // Pagination schemas
 const limitSchema = v.pipe(
   v.number("Limit must be a number"),
@@ -104,20 +103,17 @@ const limitSchema = v.pipe(
   v.minValue(1, "Limit must be at least 1"),
   v.maxValue(1000, "Limit cannot exceed 1000"),
 );
-
 const offsetSchema = v.pipe(
   v.number("Offset must be a number"),
   v.integer("Offset must be an integer"),
   v.minValue(0, "Offset cannot be negative"),
 );
-
 // UID validation
 const uidSchema = v.pipe(
   v.number("UID must be a number"),
   v.integer("UID must be an integer"),
   v.minValue(1, "UID must be positive"),
 );
-
 // Email recipient schema
 const recipientSchema = v.object({
   name: v.optional(
@@ -129,7 +125,6 @@ const recipientSchema = v.object({
   ),
   address: emailSchema,
 });
-
 // Email flag validation
 const emailFlagSchema = v.union([
   v.pipe(
@@ -145,7 +140,6 @@ const emailFlagSchema = v.union([
     "\\Recent",
   ]),
 ]);
-
 // Calendar query validation
 const calendarQuerySchema = v.pipe(
   v.string("Search query must be a string"),
@@ -154,7 +148,6 @@ const calendarQuerySchema = v.pipe(
   v.maxLength(500, "Search query too long"),
   v.transform(sanitizeString),
 );
-
 // Calendar name validation
 const calendarNameSchema = v.pipe(
   v.string("Calendar name must be a string"),
@@ -163,11 +156,9 @@ const calendarNameSchema = v.pipe(
   v.maxLength(255, "Calendar name too long"),
   v.transform(sanitizeString),
 );
-
 // =============================================================================
 // EMAIL TOOL SCHEMAS
 // =============================================================================
-
 export const searchEmailsSchema = v.object({
   query: v.optional(
     v.pipe(
@@ -182,12 +173,10 @@ export const searchEmailsSchema = v.object({
   limit: v.optional(limitSchema, 50),
   offset: v.optional(offsetSchema, 0),
 });
-
 export const getEmailSchema = v.object({
   uid: uidSchema,
   folder: v.optional(folderNameSchema, "INBOX"),
 });
-
 export const getEmailThreadSchema = v.object({
   messageId: v.pipe(
     v.string("Message ID must be a string"),
@@ -198,7 +187,6 @@ export const getEmailThreadSchema = v.object({
   ),
   folder: v.optional(folderNameSchema, "INBOX"),
 });
-
 export const sendEmailSchema = v.pipe(
   v.object({
     to: v.pipe(
@@ -227,7 +215,6 @@ export const sendEmailSchema = v.pipe(
     "Either text or HTML content is required",
   ),
 );
-
 export const createDraftSchema = v.object({
   to: v.pipe(
     v.array(recipientSchema, "Recipients must be an array"),
@@ -251,13 +238,11 @@ export const createDraftSchema = v.object({
   html: v.optional(htmlContentSchema),
   folder: v.optional(folderNameSchema, "Drafts"),
 });
-
 export const moveEmailSchema = v.object({
   uid: uidSchema,
   fromFolder: folderNameSchema,
   toFolder: folderNameSchema,
 });
-
 export const markEmailSchema = v.object({
   uid: uidSchema,
   folder: v.optional(folderNameSchema, "INBOX"),
@@ -268,13 +253,11 @@ export const markEmailSchema = v.object({
   ),
   action: v.picklist(["add", "remove"], "Action must be 'add' or 'remove'"),
 });
-
 export const deleteEmailSchema = v.object({
   uid: uidSchema,
   folder: v.optional(folderNameSchema, "INBOX"),
   permanent: v.optional(v.boolean("Permanent must be a boolean"), false),
 });
-
 export const createDirectorySchema = v.object({
   name: folderNameSchema,
   parentPath: v.optional(
@@ -286,11 +269,9 @@ export const createDirectorySchema = v.object({
     "",
   ),
 });
-
 // =============================================================================
 // CALENDAR TOOL SCHEMAS
 // =============================================================================
-
 export const getCalendarEventsSchema = v.pipe(
   v.object({
     start: v.optional(dateSchema),
@@ -314,7 +295,6 @@ export const getCalendarEventsSchema = v.pipe(
     return true;
   }, "Start date must be before end date"),
 );
-
 export const searchCalendarSchema = v.pipe(
   v.object({
     query: calendarQuerySchema,
@@ -339,7 +319,6 @@ export const searchCalendarSchema = v.pipe(
     return true;
   }, "Start date must be before end date"),
 );
-
 export const getFreeBusySchema = v.pipe(
   v.object({
     start: dateSchema,
@@ -351,11 +330,9 @@ export const getFreeBusySchema = v.pipe(
     "Start date must be before end date",
   ),
 );
-
 // =============================================================================
 // SCHEMA TYPE EXPORTS
 // =============================================================================
-
 export type SearchEmailsInput = v.InferOutput<typeof searchEmailsSchema>;
 export type GetEmailInput = v.InferOutput<typeof getEmailSchema>;
 export type GetEmailThreadInput = v.InferOutput<typeof getEmailThreadSchema>;
@@ -365,17 +342,14 @@ export type MoveEmailInput = v.InferOutput<typeof moveEmailSchema>;
 export type MarkEmailInput = v.InferOutput<typeof markEmailSchema>;
 export type DeleteEmailInput = v.InferOutput<typeof deleteEmailSchema>;
 export type CreateDirectoryInput = v.InferOutput<typeof createDirectorySchema>;
-
 export type GetCalendarEventsInput = v.InferOutput<
   typeof getCalendarEventsSchema
 >;
 export type SearchCalendarInput = v.InferOutput<typeof searchCalendarSchema>;
 export type GetFreeBusyInput = v.InferOutput<typeof getFreeBusySchema>;
-
 // =============================================================================
 // VALIDATION UTILITIES
 // =============================================================================
-
 export function validateInput<T>(
   schema: v.GenericSchema<T>,
   input: unknown,
@@ -391,7 +365,6 @@ export function validateInput<T>(
     throw error;
   }
 }
-
 export function safeValidateInput<T>(
   schema: v.GenericSchema<T>,
   input: unknown,

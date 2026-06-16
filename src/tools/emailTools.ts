@@ -557,6 +557,10 @@ ${thread.messages
 
         const result = await smtpService.sendEmail(composition);
 
+        if (result.success) {
+          await emailService.appendToSent(composition);
+        }
+
         return {
           content: [
             {
