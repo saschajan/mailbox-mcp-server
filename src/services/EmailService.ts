@@ -934,6 +934,28 @@ export class EmailService {
     }
   }
 
+  async appendToSent(composition: EmailComposition): Promise<void> {
+    const sentFolder = "Sent";
+    let wrapper: ImapConnectionWrapper | null = null;
+
+    try {
+      wrapper = await this.pool.acquireForFolder(sentFolder);
+      const emailContent = this.buildEmailContent(composition);
+      await wrapper.connection.append(sentFolder, emailContent, ["\\Seen"]);
+      this.clearFolderCache(sentFolder);
+    } catch (error) {
+      await this.logger.warning(
+        "Failed to save sent email to Sent folder",
+        { operation: "appendToSent", service: "EmailService" },
+        { error: error instanceof Error ? error.message : String(error) },
+      );
+    } finally {
+      if (wrapper) {
+        await this.pool.releaseFromFolder(wrapper);
+      }
+    }
+  }
+
   private buildEmailContent(composition: EmailComposition): string {
     const headers: string[] = [];
 

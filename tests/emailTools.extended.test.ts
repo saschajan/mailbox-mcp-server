@@ -34,6 +34,7 @@ describe("Email Tools - Extended Coverage", () => {
       moveEmail: vi.fn(),
       markEmail: vi.fn(),
       deleteEmail: vi.fn(),
+      appendToSent: vi.fn().mockResolvedValue(undefined),
     };
 
     mockSmtpService = {
