@@ -315,6 +315,7 @@ describe("main.ts module structure and logic", () => {
           "get_email_thread",
           "send_email",
           "create_draft",
+          "reply_to_email",
           "move_email",
           "mark_email",
           "delete_email",
@@ -329,7 +330,7 @@ describe("main.ts module structure and logic", () => {
       }
 
       // Verify we have the expected number of tools
-      expect(implementedEmailToolNames).toHaveLength(10);
+      expect(implementedEmailToolNames).toHaveLength(11);
       expect(implementedEmailToolNames).toContain("create_directory");
     });
 

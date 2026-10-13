@@ -20,6 +20,7 @@ interface ImapMessage {
     to?: Array<{ name?: string; address: string }>;
     cc?: Array<{ name?: string; address: string }>;
     date?: Date;
+    inReplyTo?: string;
   };
   uid: number;
   flags: string[];
@@ -52,6 +53,12 @@ import {
 } from "../types/errors.js";
 import { withCacheFallback } from "../utils/cacheFallback.js";
 import {
+  defaultSender,
+  domainOf,
+  generateMessageId,
+  normalizeMessageId,
+} from "../utils/replyUtils.js";
+import {
   ImapConnectionPool,
   type ImapConnectionWrapper,
   type ImapPoolConfig,
@@ -64,18 +71,25 @@ export class EmailService {
   private cache: LocalCache;
   private offlineService: OfflineService;
   private logger = createLogger("EmailService");
+  private accountAddress: string;
 
   constructor(
     connection: ImapConnection,
     cache: LocalCache,
     poolConfig: Omit<ImapPoolConfig, "connectionConfig">,
   ) {
+    this.accountAddress = connection.user;
     this.cache = cache;
     this.offlineService = new OfflineService(cache);
     this.pool = new ImapConnectionPool({
       ...poolConfig,
       connectionConfig: connection,
     });
+  }
+
+  /** Login address of the mailbox account */
+  getAccountAddress(): string {
+    return this.accountAddress;
   }
 
   async disconnect(): Promise<void> {
@@ -555,6 +569,8 @@ export class EmailService {
       date: envelope.date || new Date(),
       flags: message.flags || [],
       folder,
+      messageId: envelope.messageId,
+      inReplyTo: envelope.inReplyTo,
     };
   }
 
@@ -582,6 +598,10 @@ export class EmailService {
       })),
       flags: message.flags || [],
       folder,
+      messageId: parsed.messageId,
+      inReplyTo: parsed.inReplyTo,
+      references: this.parseReferences(parsed.references),
+      replyTo: this.parseAddressesFromParsed(parsed.replyTo),
     };
   }
 
@@ -602,21 +622,58 @@ export class EmailService {
     }));
   }
 
+  /**
+   * mailparser returns AddressObject ({ value, text }) or an array of them.
+   * Older callers pass plain { name, address } objects. Groups are flattened.
+   */
   private parseAddressesFromParsed(
     addresses: unknown,
   ): Array<{ name?: string; address: string }> {
     if (!addresses) return [];
-    if (!Array.isArray(addresses)) {
-      const addr = addresses as { name?: string; address: string };
-      if (addr.address) {
-        return [{ name: addr.name, address: addr.address }];
+
+    const result: Array<{ name?: string; address: string }> = [];
+    const visit = (entry: unknown): void => {
+      if (!entry || typeof entry !== "object") return;
+      if (Array.isArray(entry)) {
+        for (const item of entry) visit(item);
+        return;
       }
-      return [];
-    }
-    return addresses.map(addr => ({
-      name: addr.name,
-      address: addr.address,
-    }));
+      const candidate = entry as {
+        name?: string;
+        address?: string;
+        value?: unknown;
+        group?: unknown;
+      };
+      if (Array.isArray(candidate.value)) {
+        visit(candidate.value);
+        return;
+      }
+      if (Array.isArray(candidate.group)) {
+        visit(candidate.group);
+        return;
+      }
+      if (candidate.address) {
+        result.push({
+          name: candidate.name || undefined,
+          address: candidate.address,
+        });
+      }
+    };
+
+    visit(addresses);
+    return result;
+  }
+
+  private parseReferences(references: unknown): string[] | undefined {
+    const raw = Array.isArray(references)
+      ? references
+      : typeof references === "string"
+        ? references.split(/\s+/)
+        : [];
+    const ids = raw
+      .filter((id): id is string => typeof id === "string" && id.trim() !== "")
+      .map(normalizeMessageId);
+    return ids.length > 0 ? ids : undefined;
   }
 
   private async buildEmailThread(
@@ -958,6 +1015,9 @@ export class EmailService {
 
   private buildEmailContent(composition: EmailComposition): string {
     const headers: string[] = [];
+    const from = composition.from || defaultSender(this.accountAddress);
+
+    headers.push(`From: ${this.formatAddressesForHeader([from])}`);
 
     // Add recipients
     headers.push(`To: ${this.formatAddressesForHeader(composition.to)}`);
@@ -972,7 +1032,19 @@ export class EmailService {
 
     headers.push(`Subject: ${composition.subject}`);
     headers.push(`Date: ${new Date().toUTCString()}`);
-    headers.push(`Message-ID: <${Date.now()}.${Math.random()}@mailbox.org>`);
+    headers.push(
+      `Message-ID: ${composition.messageId || generateMessageId(domainOf(from.address))}`,
+    );
+
+    if (composition.inReplyTo) {
+      headers.push(`In-Reply-To: ${composition.inReplyTo}`);
+    }
+
+    if (composition.references && composition.references.length > 0) {
+      headers.push(`References: ${composition.references.join(" ")}`);
+    }
+
+    headers.push("MIME-Version: 1.0");
 
     if (composition.html) {
       headers.push("Content-Type: text/html; charset=utf-8");

@@ -113,13 +113,14 @@ A Model Context Protocol (MCP) server that integrates mailbox.org email and cale
 
 #### **Reading & Search**
 - **`search_emails`** - Search your mailbox by text, sender, date, etc.
-- **`get_email`** - Retrieve complete email content by UID
+- **`get_email`** - Retrieve complete email content by UID, including Reply-To, Message-ID, In-Reply-To and References
 - **`get_email_thread`** - Get conversation threads by message ID
 - **`get_folders`** - List all available email folders
 
 #### **Composition & Sending**
-- **`send_email`** - Compose and send emails with attachments
-- **`create_draft`** - Save email drafts for later editing
+- **`send_email`** - Compose and send emails with attachments. Optional `from` sends from an alias; optional `inReplyTo`/`references` set threading headers
+- **`create_draft`** - Save email drafts for later editing (same optional `from`, `inReplyTo`, `references`)
+- **`reply_to_email`** - Reply to an email by UID so the answer stays in the thread. Sets In-Reply-To, References, recipients and subject automatically. Saves a draft by default, `mode: "send"` sends it. Supports `replyAll`, `quoteOriginal` and `from` for aliases
 
 #### **Email Management**
 - **`move_email`** - Move emails between folders

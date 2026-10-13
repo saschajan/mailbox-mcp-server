@@ -35,6 +35,7 @@ describe("Email Tools - Extended Coverage", () => {
       markEmail: vi.fn(),
       deleteEmail: vi.fn(),
       appendToSent: vi.fn().mockResolvedValue(undefined),
+      getAccountAddress: vi.fn().mockReturnValue("me@mailbox.org"),
     };
 
     mockSmtpService = {
@@ -68,6 +69,7 @@ describe("Email Tools - Extended Coverage", () => {
         cc: undefined,
         bcc: undefined,
         html: undefined,
+        messageId: expect.stringMatching(/^<[^<>\s]+@mailbox\.org>$/),
       });
       expect(result.content[0].text).toContain("✅ Email sent successfully!");
       expect(result.content[0].text).toContain("Test Email");
@@ -499,6 +501,239 @@ describe("Email Tools - Extended Coverage", () => {
       );
 
       expect(result.content[0].text).toContain("(0)");
+    });
+  });
+
+  describe("threading and sender alias", () => {
+    const original: EmailMessage = {
+      id: "<reply-123@wibank.de>",
+      messageId: "<reply-123@wibank.de>",
+      inReplyTo: "<request-1@wibank.de>",
+      references: ["<request-1@wibank.de>"],
+      uid: 15120,
+      subject: "AW: Nachricht an die WIBank",
+      from: [{ name: "PV-Anlagen-Darlehen", address: "pv@wibank.de" }],
+      to: [
+        { address: "alias+wibank@mailbox.org" },
+        { name: "PV-Anlagen-Darlehen", address: "pv@wibank.de" },
+      ],
+      cc: [{ name: "Kollege", address: "kollege@wibank.de" }],
+      date: new Date("2026-10-07T05:51:18.000Z"),
+      text: "Sehr geehrter Herr Born,\nvielen Dank.",
+      flags: [],
+      folder: "INBOX",
+    };
+
+    it("send_email should use the same Message-ID for SMTP and the Sent copy", async () => {
+      vi.mocked(mockSmtpService.sendEmail!).mockResolvedValue({
+        success: true,
+        message: "Email sent",
+      });
+
+      await handleEmailTool(
+        "send_email",
+        {
+          from: { name: "Max", address: "alias+wibank@mailbox.org" },
+          to: [{ address: "pv@wibank.de" }],
+          subject: "Test",
+          text: "Hallo",
+        },
+        mockEmailService as EmailService,
+        mockSmtpService as SmtpService,
+      );
+
+      const sent = vi.mocked(mockSmtpService.sendEmail!).mock.calls[0][0];
+      const stored = vi.mocked(mockEmailService.appendToSent!).mock.calls[0][0];
+      expect(sent.from).toEqual({
+        name: "Max",
+        address: "alias+wibank@mailbox.org",
+      });
+      expect(sent.messageId).toMatch(/@mailbox\.org>$/);
+      expect(stored.messageId).toBe(sent.messageId);
+      expect(stored.from).toEqual(sent.from);
+    });
+
+    it("send_email should normalize and pass reply headers", async () => {
+      vi.mocked(mockSmtpService.sendEmail!).mockResolvedValue({
+        success: true,
+        message: "Email sent",
+      });
+
+      await handleEmailTool(
+        "send_email",
+        {
+          to: [{ address: "pv@wibank.de" }],
+          subject: "Re: Test",
+          text: "Hallo",
+          inReplyTo: "reply-123@wibank.de",
+          references: ["<request-1@wibank.de>", "reply-123@wibank.de"],
+        },
+        mockEmailService as EmailService,
+        mockSmtpService as SmtpService,
+      );
+
+      const sent = vi.mocked(mockSmtpService.sendEmail!).mock.calls[0][0];
+      expect(sent.inReplyTo).toBe("<reply-123@wibank.de>");
+      expect(sent.references).toEqual([
+        "<request-1@wibank.de>",
+        "<reply-123@wibank.de>",
+      ]);
+    });
+
+    it("send_email should reject malformed Message-IDs", async () => {
+      const result = await handleEmailTool(
+        "send_email",
+        {
+          to: [{ address: "pv@wibank.de" }],
+          subject: "Re: Test",
+          text: "Hallo",
+          inReplyTo: "not a message id",
+        },
+        mockEmailService as EmailService,
+        mockSmtpService as SmtpService,
+      );
+
+      expect(result.isError).toBe(true);
+      expect(mockSmtpService.sendEmail).not.toHaveBeenCalled();
+    });
+
+    it("reply_to_email should save a threaded draft by default", async () => {
+      vi.mocked(mockEmailService.getEmail!).mockResolvedValue(original);
+      vi.mocked(mockEmailService.createDraft!).mockResolvedValue({
+        success: true,
+        message: "Draft saved",
+        uid: 42,
+      });
+
+      const result = await handleEmailTool(
+        "reply_to_email",
+        { uid: 15120, text: "Danke!" },
+        mockEmailService as EmailService,
+        mockSmtpService as SmtpService,
+      );
+
+      expect(mockSmtpService.sendEmail).not.toHaveBeenCalled();
+      const [draft, folder] = vi.mocked(mockEmailService.createDraft!).mock
+        .calls[0];
+      expect(folder).toBe("Drafts");
+      expect(draft.to).toEqual([
+        { name: "PV-Anlagen-Darlehen", address: "pv@wibank.de" },
+      ]);
+      expect(draft.cc).toBeUndefined();
+      expect(draft.subject).toBe("AW: Nachricht an die WIBank");
+      expect(draft.inReplyTo).toBe("<reply-123@wibank.de>");
+      expect(draft.references).toEqual([
+        "<request-1@wibank.de>",
+        "<reply-123@wibank.de>",
+      ]);
+      expect(draft.text).toBe("Danke!");
+      expect(result.isError).toBe(false);
+      expect(result.content[0].text).toContain("saved as draft");
+      expect(result.content[0].text).toContain(
+        "In-Reply-To:** <reply-123@wibank.de>",
+      );
+    });
+
+    it("reply_to_email should send, reply-all and store the Sent copy", async () => {
+      vi.mocked(mockEmailService.getEmail!).mockResolvedValue(original);
+      vi.mocked(mockSmtpService.sendEmail!).mockResolvedValue({
+        success: true,
+        message: "Email sent",
+      });
+
+      const result = await handleEmailTool(
+        "reply_to_email",
+        {
+          uid: 15120,
+          text: "Danke!",
+          html: "<p>Danke!</p>",
+          mode: "send",
+          replyAll: true,
+          from: { address: "alias+wibank@mailbox.org" },
+          quoteOriginal: true,
+        },
+        mockEmailService as EmailService,
+        mockSmtpService as SmtpService,
+      );
+
+      const sent = vi.mocked(mockSmtpService.sendEmail!).mock.calls[0][0];
+      expect(sent.from).toEqual({ address: "alias+wibank@mailbox.org" });
+      expect(sent.to).toEqual([
+        { name: "PV-Anlagen-Darlehen", address: "pv@wibank.de" },
+      ]);
+      expect(sent.cc).toEqual([
+        { name: "Kollege", address: "kollege@wibank.de" },
+      ]);
+      expect(sent.text).toContain("> Sehr geehrter Herr Born,");
+      expect(sent.html).toContain("<blockquote");
+      expect(mockEmailService.appendToSent).toHaveBeenCalledWith(sent);
+      expect(result.content[0].text).toContain("Reply sent");
+    });
+
+    it("reply_to_email should hint at the alias when no from is given", async () => {
+      vi.mocked(mockEmailService.getEmail!).mockResolvedValue({
+        ...original,
+        to: [{ address: "alias+wibank@mailbox.org" }],
+      });
+      vi.mocked(mockEmailService.createDraft!).mockResolvedValue({
+        success: true,
+        message: "Draft saved",
+      });
+
+      const result = await handleEmailTool(
+        "reply_to_email",
+        { uid: 15120, text: "Danke!" },
+        mockEmailService as EmailService,
+        mockSmtpService as SmtpService,
+      );
+
+      expect(result.content[0].text).toContain("alias+wibank@mailbox.org");
+      expect(result.content[0].text).toContain('pass "from"');
+    });
+
+    it("reply_to_email should report a missing original", async () => {
+      vi.mocked(mockEmailService.getEmail!).mockResolvedValue(null);
+
+      const result = await handleEmailTool(
+        "reply_to_email",
+        { uid: 999, text: "Danke!" },
+        mockEmailService as EmailService,
+        mockSmtpService as SmtpService,
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain("not found");
+    });
+
+    it("reply_to_email should refuse send mode without SMTP", async () => {
+      const result = await handleEmailTool(
+        "reply_to_email",
+        { uid: 15120, text: "Danke!", mode: "send" },
+        mockEmailService as EmailService,
+      );
+
+      expect(result.isError).toBe(true);
+      expect(mockEmailService.getEmail).not.toHaveBeenCalled();
+    });
+
+    it("get_email should show threading headers", async () => {
+      vi.mocked(mockEmailService.getEmail!).mockResolvedValue({
+        ...original,
+        replyTo: [{ address: "team@wibank.de" }],
+      });
+
+      const result = await handleEmailTool(
+        "get_email",
+        { uid: 15120 },
+        mockEmailService as EmailService,
+      );
+
+      const text = result.content[0].text;
+      expect(text).toContain("**From:** PV-Anlagen-Darlehen <pv@wibank.de>");
+      expect(text).toContain("**Reply-To:** <team@wibank.de>");
+      expect(text).toContain("**Message-ID:** <reply-123@wibank.de>");
+      expect(text).toContain("**In-Reply-To:** <request-1@wibank.de>");
+      expect(text).toContain("**References:** <request-1@wibank.de>");
     });
   });
 });

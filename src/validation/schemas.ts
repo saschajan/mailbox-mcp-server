@@ -125,6 +125,22 @@ const recipientSchema = v.object({
   ),
   address: emailSchema,
 });
+// Message-ID validation (RFC 5322 msg-id), normalized to <local@domain>
+const messageIdSchema = v.pipe(
+  v.string("Message ID must be a string"),
+  v.trim(),
+  v.maxLength(998, "Message ID too long"),
+  v.transform(sanitizeString),
+  v.check(
+    id => /^<?[^<>\s@]+@[^<>\s@]+>?$/.test(id),
+    "Invalid Message ID format, expected <local@domain>",
+  ),
+  v.transform(id => `<${id.replace(/^</, "").replace(/>$/, "")}>`),
+);
+const referencesSchema = v.pipe(
+  v.array(messageIdSchema, "References must be an array"),
+  v.maxLength(100, "Too many references"),
+);
 // Email flag validation
 const emailFlagSchema = v.union([
   v.pipe(
@@ -189,6 +205,9 @@ export const getEmailThreadSchema = v.object({
 });
 export const sendEmailSchema = v.pipe(
   v.object({
+    from: v.optional(recipientSchema),
+    inReplyTo: v.optional(messageIdSchema),
+    references: v.optional(referencesSchema),
     to: v.pipe(
       v.array(recipientSchema, "Recipients must be an array"),
       v.minLength(1, "At least one recipient is required"),
@@ -216,6 +235,9 @@ export const sendEmailSchema = v.pipe(
   ),
 );
 export const createDraftSchema = v.object({
+  from: v.optional(recipientSchema),
+  inReplyTo: v.optional(messageIdSchema),
+  references: v.optional(referencesSchema),
   to: v.pipe(
     v.array(recipientSchema, "Recipients must be an array"),
     v.minLength(1, "At least one recipient is required"),
@@ -238,6 +260,42 @@ export const createDraftSchema = v.object({
   html: v.optional(htmlContentSchema),
   folder: v.optional(folderNameSchema, "Drafts"),
 });
+export const replyToEmailSchema = v.pipe(
+  v.object({
+    uid: uidSchema,
+    folder: v.optional(folderNameSchema, "INBOX"),
+    text: v.optional(textContentSchema),
+    html: v.optional(htmlContentSchema),
+    replyAll: v.optional(v.boolean("replyAll must be a boolean"), false),
+    cc: v.optional(
+      v.pipe(
+        v.array(recipientSchema, "CC recipients must be an array"),
+        v.maxLength(100, "Too many CC recipients"),
+      ),
+    ),
+    bcc: v.optional(
+      v.pipe(
+        v.array(recipientSchema, "BCC recipients must be an array"),
+        v.maxLength(100, "Too many BCC recipients"),
+      ),
+    ),
+    from: v.optional(recipientSchema),
+    subject: v.optional(subjectSchema),
+    quoteOriginal: v.optional(
+      v.boolean("quoteOriginal must be a boolean"),
+      false,
+    ),
+    mode: v.optional(
+      v.picklist(["draft", "send"], "Mode must be 'draft' or 'send'"),
+      "draft",
+    ),
+    draftFolder: v.optional(folderNameSchema, "Drafts"),
+  }),
+  v.check(
+    data => !!(data.text || data.html),
+    "Either text or HTML content is required",
+  ),
+);
 export const moveEmailSchema = v.object({
   uid: uidSchema,
   fromFolder: folderNameSchema,
@@ -338,6 +396,7 @@ export type GetEmailInput = v.InferOutput<typeof getEmailSchema>;
 export type GetEmailThreadInput = v.InferOutput<typeof getEmailThreadSchema>;
 export type SendEmailInput = v.InferOutput<typeof sendEmailSchema>;
 export type CreateDraftInput = v.InferOutput<typeof createDraftSchema>;
+export type ReplyToEmailInput = v.InferOutput<typeof replyToEmailSchema>;
 export type MoveEmailInput = v.InferOutput<typeof moveEmailSchema>;
 export type MarkEmailInput = v.InferOutput<typeof markEmailSchema>;
 export type DeleteEmailInput = v.InferOutput<typeof deleteEmailSchema>;

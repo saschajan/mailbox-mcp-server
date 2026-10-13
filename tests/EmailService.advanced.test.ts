@@ -1,5 +1,6 @@
 import { type Mock, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConnectionPoolConfig } from "../src/services/ConnectionPool.js";
+import { simpleParser } from "mailparser";
 import { EmailService } from "../src/services/EmailService.js";
 import type { LocalCache } from "../src/types/cache.types.js";
 import type {
@@ -324,7 +325,57 @@ describe("EmailService - Advanced Coverage", () => {
 
       const content = service.buildEmailContent(composition);
 
-      expect(content).toMatch(/Message-ID: <.+@mailbox\.org>/);
+      expect(content).toMatch(/Message-ID: <.+@example\.com>/);
+    });
+
+    it("should use the account address as default From", () => {
+      const content = service.buildEmailContent({
+        to: [{ address: "recipient@example.com" }],
+        subject: "Test Subject",
+        text: "Test",
+      });
+
+      expect(content).toContain('From: "Test" <test@example.com>');
+    });
+
+    it("should use the From override for aliases", () => {
+      const content = service.buildEmailContent({
+        from: { name: "Max", address: "alias+tag@example.com" },
+        to: [{ address: "recipient@example.com" }],
+        subject: "Test Subject",
+        text: "Test",
+      });
+
+      expect(content).toContain('From: "Max" <alias+tag@example.com>');
+      expect(content).not.toContain("test@example.com");
+    });
+
+    it("should write reply headers and a given Message-ID", () => {
+      const content = service.buildEmailContent({
+        messageId: "<fixed@example.com>",
+        inReplyTo: "<parent@wibank.de>",
+        references: ["<root@wibank.de>", "<parent@wibank.de>"],
+        to: [{ address: "recipient@example.com" }],
+        subject: "Re: Test",
+        text: "Test",
+      });
+
+      expect(content).toContain("Message-ID: <fixed@example.com>");
+      expect(content).toContain("In-Reply-To: <parent@wibank.de>");
+      expect(content).toContain(
+        "References: <root@wibank.de> <parent@wibank.de>",
+      );
+    });
+
+    it("should omit reply headers for new messages", () => {
+      const content = service.buildEmailContent({
+        to: [{ address: "recipient@example.com" }],
+        subject: "Test",
+        text: "Test",
+      });
+
+      expect(content).not.toContain("In-Reply-To:");
+      expect(content).not.toContain("References:");
     });
 
     it("should handle empty content", () => {
@@ -1243,6 +1294,38 @@ describe("EmailService - Advanced Coverage", () => {
         [],
       ],
       ["empty array", [], []],
+      [
+        "mailparser AddressObject",
+        {
+          value: [{ name: "PV-Anlagen-Darlehen", address: "pv@wibank.de" }],
+          text: "PV-Anlagen-Darlehen <pv@wibank.de>",
+        },
+        [{ name: "PV-Anlagen-Darlehen", address: "pv@wibank.de" }],
+      ],
+      [
+        "array of mailparser AddressObjects",
+        [
+          { value: [{ name: "", address: "a@example.com" }], text: "" },
+          { value: [{ name: "B", address: "b@example.com" }], text: "" },
+        ],
+        [
+          { name: undefined, address: "a@example.com" },
+          { name: "B", address: "b@example.com" },
+        ],
+      ],
+      [
+        "address group",
+        {
+          value: [
+            {
+              name: "Team",
+              group: [{ name: "C", address: "c@example.com" }],
+            },
+          ],
+          text: "",
+        },
+        [{ name: "C", address: "c@example.com" }],
+      ],
     ])("should parse %s", (_description: string, input: unknown, expected: Array<{
       name?: string;
       address: string;
@@ -1250,6 +1333,65 @@ describe("EmailService - Advanced Coverage", () => {
       const testableService = service as TestableEmailService;
       const result = testableService.parseAddressesFromParsed(input);
       expect(result).toEqual(expected);
+    });
+  });
+
+  describe("parseFullEmailMessage with real mailparser", () => {
+    const raw = [
+      "From: PV-Anlagen-Darlehen <PV-Anlagen-Darlehen@wibank.de>",
+      "To: advertise+wibank@mailbox.org, PV-Anlagen-Darlehen <PV-Anlagen-Darlehen@wibank.de>",
+      "Cc: Kollege <kollege@wibank.de>",
+      "Reply-To: Team <team@wibank.de>",
+      "Subject: AW: Nachricht an die WIBank",
+      "Date: Wed, 07 Oct 2026 07:51:18 +0200",
+      "Message-ID: <reply-123@wibank.de>",
+      "In-Reply-To: <request-1@wibank.de>",
+      "References: <root-0@mailbox.org> <request-1@wibank.de>",
+      "MIME-Version: 1.0",
+      "Content-Type: text/plain; charset=utf-8",
+      "",
+      "Sehr geehrter Herr Born,",
+      "",
+    ].join("\r\n");
+
+    it("should expose From, To, CC, Reply-To and threading headers", async () => {
+      const parsed = await simpleParser(raw);
+      const testable = service as unknown as {
+        parseFullEmailMessage(
+          parsed: unknown,
+          message: { uid: number; flags: string[] },
+          folder: string,
+        ): EmailMessage;
+      };
+
+      const email = testable.parseFullEmailMessage(
+        parsed,
+        { uid: 15120, flags: [] },
+        "INBOX",
+      );
+
+      expect(email.from).toEqual([
+        {
+          name: "PV-Anlagen-Darlehen",
+          address: "PV-Anlagen-Darlehen@wibank.de",
+        },
+      ]);
+      expect(email.to.map(a => a.address)).toEqual([
+        "advertise+wibank@mailbox.org",
+        "PV-Anlagen-Darlehen@wibank.de",
+      ]);
+      expect(email.cc).toEqual([
+        { name: "Kollege", address: "kollege@wibank.de" },
+      ]);
+      expect(email.replyTo).toEqual([
+        { name: "Team", address: "team@wibank.de" },
+      ]);
+      expect(email.messageId).toBe("<reply-123@wibank.de>");
+      expect(email.inReplyTo).toBe("<request-1@wibank.de>");
+      expect(email.references).toEqual([
+        "<root-0@mailbox.org>",
+        "<request-1@wibank.de>",
+      ]);
     });
   });
 });

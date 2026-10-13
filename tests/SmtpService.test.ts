@@ -204,6 +204,46 @@ describe("SmtpService", () => {
       );
     });
 
+    it("should send from an alias when from is given", async () => {
+      const composition = createMockEmailComposition({
+        from: { name: "Max Muster", address: "alias+tag@example.com" },
+      });
+
+      await smtpService.sendEmail(composition);
+
+      expect(mockSendMail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          from: { name: "Max Muster", address: "alias+tag@example.com" },
+        }),
+      );
+    });
+
+    it("should pass Message-ID and reply headers to nodemailer", async () => {
+      const composition = createMockEmailComposition({
+        messageId: "<fixed@example.com>",
+        inReplyTo: "<parent@example.com>",
+        references: ["<root@example.com>", "<parent@example.com>"],
+      });
+
+      await smtpService.sendEmail(composition);
+
+      expect(mockSendMail).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messageId: "<fixed@example.com>",
+          inReplyTo: "<parent@example.com>",
+          references: ["<root@example.com>", "<parent@example.com>"],
+        }),
+      );
+    });
+
+    it("should not set reply headers for new messages", async () => {
+      await smtpService.sendEmail(createMockEmailComposition());
+
+      const options = mockSendMail.mock.calls[0][0];
+      expect(options).not.toHaveProperty("inReplyTo");
+      expect(options).not.toHaveProperty("references");
+    });
+
     it("should send email with HTML content", async () => {
       const composition = createMockEmailComposition({
         html: "<h1>Test HTML Email</h1>",
