@@ -10,6 +10,15 @@ import {
   ValidationError,
 } from "../types/errors.js";
 import {
+  buildQuotedHtml,
+  buildQuotedText,
+  buildReplyHeaders,
+  buildReplyRecipients,
+  buildReplySubject,
+  domainOf,
+  generateMessageId,
+} from "../utils/replyUtils.js";
+import {
   createDirectorySchema,
   createDraftSchema,
   deleteEmailSchema,
@@ -17,6 +26,7 @@ import {
   getEmailThreadSchema,
   markEmailSchema,
   moveEmailSchema,
+  replyToEmailSchema,
   searchEmailsSchema,
   sendEmailSchema,
   validateInput,
@@ -29,6 +39,7 @@ export const EMAIL_TOOLS = [
   "get_email_thread",
   "send_email",
   "create_draft",
+  "reply_to_email",
   "move_email",
   "mark_email",
   "delete_email",
@@ -37,6 +48,41 @@ export const EMAIL_TOOLS = [
 ] as const;
 
 export type EmailToolName = (typeof EMAIL_TOOLS)[number];
+
+type Address = { name?: string; address: string };
+
+const formatAddresses = (addresses: Address[] | undefined): string =>
+  (addresses || [])
+    .map(a => (a.name ? `${a.name} <${a.address}>` : `<${a.address}>`))
+    .join(", ");
+
+const addressItemSchema = {
+  type: "object",
+  properties: {
+    name: { type: "string" },
+    address: { type: "string", format: "email" },
+  },
+  required: ["address"],
+};
+
+const threadingProperties = {
+  from: {
+    ...addressItemSchema,
+    description:
+      "Sender (optional). Use to send from an alias of the account, e.g. a plus address. Defaults to the login address.",
+  },
+  inReplyTo: {
+    type: "string",
+    description:
+      "Message-ID (<local@domain>) of the email this one replies to (optional). Prefer reply_to_email, which sets this automatically.",
+  },
+  references: {
+    type: "array",
+    items: { type: "string" },
+    description:
+      "Message-IDs of the conversation, oldest first (optional). Prefer reply_to_email, which sets this automatically.",
+  },
+};
 
 export function isEmailTool(name: string): name is EmailToolName {
   return EMAIL_TOOLS.includes(name as EmailToolName);
@@ -134,10 +180,12 @@ export function createEmailTools(
     },
     {
       name: "send_email",
-      description: "Compose and send an email via SMTP",
+      description:
+        "Compose and send a new email via SMTP. To answer an existing email so it stays in the conversation thread, use reply_to_email instead.",
       inputSchema: {
         type: "object",
         properties: {
+          ...threadingProperties,
           to: {
             type: "array",
             items: {
@@ -193,10 +241,12 @@ export function createEmailTools(
     },
     {
       name: "create_draft",
-      description: "Save an email as a draft",
+      description:
+        "Save a new email as a draft. To draft an answer to an existing email, use reply_to_email with mode 'draft'.",
       inputSchema: {
         type: "object",
         properties: {
+          ...threadingProperties,
           to: {
             type: "array",
             items: {
@@ -252,6 +302,79 @@ export function createEmailTools(
           },
         },
         required: ["to", "subject"],
+        additionalProperties: false,
+      },
+    },
+    {
+      name: "reply_to_email",
+      description:
+        "Reply to an existing email so it lands in the same conversation thread. Reads the original by UID and sets In-Reply-To, References, recipients (Reply-To or From) and the subject automatically. Saves a draft by default; set mode to 'send' to send immediately.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          uid: {
+            type: "number",
+            description: "UID of the email to reply to",
+          },
+          folder: {
+            type: "string",
+            description: "Folder containing the email (default: INBOX)",
+            default: "INBOX",
+          },
+          text: {
+            type: "string",
+            description: "Plain text body of the reply",
+          },
+          html: {
+            type: "string",
+            description: "HTML body of the reply (optional)",
+          },
+          replyAll: {
+            type: "boolean",
+            description:
+              "Also reply to all other recipients of the original, as CC (default: false)",
+            default: false,
+          },
+          cc: {
+            type: "array",
+            items: addressItemSchema,
+            description: "Additional CC recipients (optional)",
+          },
+          bcc: {
+            type: "array",
+            items: addressItemSchema,
+            description: "BCC recipients (optional)",
+          },
+          from: {
+            ...addressItemSchema,
+            description:
+              "Sender (optional). Use to reply from the alias the original was sent to. Defaults to the login address.",
+          },
+          subject: {
+            type: "string",
+            description:
+              "Subject override (optional). Defaults to the original subject with 'Re:' unless it already has a reply prefix like 'Re:' or 'AW:'.",
+          },
+          quoteOriginal: {
+            type: "boolean",
+            description:
+              "Append the quoted original message below the reply (default: false)",
+            default: false,
+          },
+          mode: {
+            type: "string",
+            enum: ["draft", "send"],
+            description:
+              "'draft' saves the reply in the drafts folder, 'send' sends it (default: draft)",
+            default: "draft",
+          },
+          draftFolder: {
+            type: "string",
+            description: "Folder for drafts (default: Drafts)",
+            default: "Drafts",
+          },
+        },
+        required: ["uid"],
         additionalProperties: false,
       },
     },
@@ -477,10 +600,16 @@ ${
   email.cc?.length
     ? `**CC:** ${email.cc.map(c => `${c.name || ""} <${c.address}>`).join(", ")}\n`
     : ""
+}${
+  email.replyTo?.length
+    ? `**Reply-To:** ${formatAddresses(email.replyTo)}\n`
+    : ""
 }**Date:** ${email.date.toISOString()}
 **UID:** ${email.uid}
 **Folder:** ${email.folder}
-
+${email.messageId ? `**Message-ID:** ${email.messageId}\n` : ""}${
+  email.inReplyTo ? `**In-Reply-To:** ${email.inReplyTo}\n` : ""
+}${email.references?.length ? `**References:** ${email.references.join(" ")}\n` : ""}
 **Content:**
 ${email.text || email.html || "No content available"}${attachmentInfo}`,
             },
@@ -546,7 +675,14 @@ ${thread.messages
         }
 
         const validatedArgs = validateInput(sendEmailSchema, args);
+        const senderAddress =
+          validatedArgs.from?.address || emailService.getAccountAddress();
         const composition = {
+          from: validatedArgs.from,
+          // One Message-ID for the sent mail and its copy in Sent, so replies thread
+          messageId: generateMessageId(domainOf(senderAddress)),
+          inReplyTo: validatedArgs.inReplyTo,
+          references: validatedArgs.references,
           to: validatedArgs.to,
           cc: validatedArgs.cc,
           bcc: validatedArgs.bcc,
@@ -577,6 +713,9 @@ ${thread.messages
       case "create_draft": {
         const validatedArgs = validateInput(createDraftSchema, args);
         const composition = {
+          from: validatedArgs.from,
+          inReplyTo: validatedArgs.inReplyTo,
+          references: validatedArgs.references,
           to: validatedArgs.to,
           cc: validatedArgs.cc,
           bcc: validatedArgs.bcc,
@@ -597,6 +736,152 @@ ${thread.messages
               text: result.success
                 ? `✅ Draft saved successfully!\n\n**Subject:** ${validatedArgs.subject}\n**Folder:** ${validatedArgs.folder}\n**UID:** ${result.uid || "Unknown"}`
                 : `❌ Failed to save draft: ${result.message}`,
+            },
+          ],
+          isError: !result.success,
+        };
+      }
+
+      case "reply_to_email": {
+        const validatedArgs = validateInput(replyToEmailSchema, args);
+
+        if (validatedArgs.mode === "send" && !smtpService) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: "SMTP service not available. Email sending is not configured.",
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const original = await emailService.getEmail(
+          validatedArgs.uid,
+          validatedArgs.folder,
+        );
+
+        if (!original) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Email with UID ${validatedArgs.uid} not found in folder ${validatedArgs.folder}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const accountAddress = emailService.getAccountAddress();
+        const ownAddresses = [
+          accountAddress,
+          ...(validatedArgs.from ? [validatedArgs.from.address] : []),
+        ];
+        const recipients = buildReplyRecipients(
+          original,
+          ownAddresses,
+          validatedArgs.replyAll === true,
+        );
+
+        if (recipients.to.length === 0) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Could not determine a recipient for the reply to UID ${validatedArgs.uid}: the original has no From or Reply-To address.`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const taken = new Set(recipients.to.map(r => r.address.toLowerCase()));
+        const cc: Address[] = [];
+        for (const candidate of [
+          ...recipients.cc,
+          ...(validatedArgs.cc || []),
+        ]) {
+          const key = candidate.address.toLowerCase();
+          if (!taken.has(key)) {
+            taken.add(key);
+            cc.push(candidate);
+          }
+        }
+
+        const text =
+          validatedArgs.text && validatedArgs.quoteOriginal
+            ? `${validatedArgs.text}\n\n${buildQuotedText(original)}`
+            : validatedArgs.text;
+        const html =
+          validatedArgs.html && validatedArgs.quoteOriginal
+            ? `${validatedArgs.html}${buildQuotedHtml(original)}`
+            : validatedArgs.html;
+
+        const senderAddress = validatedArgs.from?.address || accountAddress;
+        const composition = {
+          from: validatedArgs.from,
+          messageId: generateMessageId(domainOf(senderAddress)),
+          ...buildReplyHeaders(original),
+          to: recipients.to,
+          cc: cc.length > 0 ? cc : undefined,
+          bcc: validatedArgs.bcc,
+          subject: validatedArgs.subject || buildReplySubject(original.subject),
+          text,
+          html,
+        };
+
+        const result =
+          validatedArgs.mode === "send" && smtpService
+            ? await smtpService.sendEmail(composition)
+            : await emailService.createDraft(
+                composition,
+                validatedArgs.draftFolder,
+              );
+
+        if (result.success && validatedArgs.mode === "send") {
+          await emailService.appendToSent(composition);
+        }
+
+        const sentByMe = original.from.some(
+          f => f.address.toLowerCase() === accountAddress.toLowerCase(),
+        );
+        const otherOwnCandidates = original.to.filter(
+          a => a.address.toLowerCase() !== accountAddress.toLowerCase(),
+        );
+        const notes: string[] = [];
+        if (!composition.inReplyTo) {
+          notes.push(
+            "⚠️ The original has no Message-ID, so the reply cannot be threaded.",
+          );
+        }
+        if (
+          !validatedArgs.from &&
+          !sentByMe &&
+          otherOwnCandidates.length > 0 &&
+          otherOwnCandidates.length === original.to.length
+        ) {
+          notes.push(
+            `ℹ️ Sender is ${accountAddress}, but the original was addressed to ${formatAddresses(original.to)}. If that is an alias of this account, pass "from" to reply from it.`,
+          );
+        }
+
+        const summary = `**Subject:** ${composition.subject}
+**From:** ${validatedArgs.from ? formatAddresses([validatedArgs.from]) : `<${accountAddress}>`}
+**To:** ${formatAddresses(composition.to)}
+${composition.cc ? `**CC:** ${formatAddresses(composition.cc)}\n` : ""}**In-Reply-To:** ${composition.inReplyTo || "none"}
+**Message-ID:** ${composition.messageId}${notes.length > 0 ? `\n\n${notes.join("\n")}` : ""}`;
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: !result.success
+                ? `❌ Failed to ${validatedArgs.mode === "send" ? "send reply" : "save reply draft"}: ${result.message}`
+                : validatedArgs.mode === "send"
+                  ? `✅ Reply sent!\n\n${summary}`
+                  : `✅ Reply saved as draft in ${validatedArgs.draftFolder} (UID ${result.uid || "Unknown"}).\n\n${summary}`,
             },
           ],
           isError: !result.success,

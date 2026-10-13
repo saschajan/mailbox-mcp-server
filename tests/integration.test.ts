@@ -138,7 +138,7 @@ describe("Integration Tests", () => {
       const emailTools = createEmailTools(emailService);
       const calendarTools = createCalendarTools(calendarService);
 
-      expect(emailTools).toHaveLength(10);
+      expect(emailTools).toHaveLength(11);
       expect(calendarTools).toHaveLength(3);
 
       const allToolNames = [...emailTools, ...calendarTools].map(t => t.name);
@@ -148,6 +148,7 @@ describe("Integration Tests", () => {
         "get_email_thread",
         "send_email",
         "create_draft",
+        "reply_to_email",
         "move_email",
         "mark_email",
         "delete_email",

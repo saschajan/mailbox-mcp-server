@@ -38,6 +38,16 @@ export interface EmailMessage {
   }>;
   flags: string[];
   folder: string;
+  /** Message-ID header including angle brackets, if the message has one */
+  messageId?: string;
+  /** In-Reply-To header including angle brackets */
+  inReplyTo?: string;
+  /** References header as a list of Message-IDs, oldest first */
+  references?: string[];
+  replyTo?: Array<{
+    name?: string;
+    address: string;
+  }>;
 }
 
 export interface EmailThread {
@@ -68,6 +78,14 @@ export interface SmtpConnection {
 }
 
 export interface EmailComposition {
+  /** Sender override, e.g. an alias of the account. Defaults to the login address. */
+  from?: { name?: string; address: string };
+  /** Message-ID to use. Generated when omitted. */
+  messageId?: string;
+  /** Message-ID of the message this one replies to */
+  inReplyTo?: string;
+  /** Message-IDs of the conversation, oldest first */
+  references?: string[];
   to: Array<{ name?: string; address: string }>;
   cc?: Array<{ name?: string; address: string }>;
   bcc?: Array<{ name?: string; address: string }>;

@@ -43,10 +43,20 @@ export class SmtpService {
       const transporter = wrapper.connection;
 
       const mailOptions = {
-        from: {
-          name: this.extractNameFromEmail(this.pool.connectionConfig.user),
-          address: this.pool.connectionConfig.user,
-        },
+        from: composition.from
+          ? {
+              name: composition.from.name || "",
+              address: composition.from.address,
+            }
+          : {
+              name: this.extractNameFromEmail(this.pool.connectionConfig.user),
+              address: this.pool.connectionConfig.user,
+            },
+        ...(composition.messageId && { messageId: composition.messageId }),
+        ...(composition.inReplyTo && { inReplyTo: composition.inReplyTo }),
+        ...(composition.references?.length && {
+          references: composition.references,
+        }),
         to: this.formatAddresses(composition.to),
         cc: composition.cc ? this.formatAddresses(composition.cc) : undefined,
         bcc: composition.bcc
